@@ -1204,7 +1204,11 @@
             const step = parseInt(slider.value);
 
             if (step === 0) return MIN_TRADE_USDT;
-            if (step === 6) step = 5; // Cap at 100%
+
+            // At 100% (step 5 or 6), return EXACT wallet amount
+            if (step >= 5) {
+                return wallet.usdt; // Use exact wallet value
+            }
 
             const percentage = SLIDER_STEPS[step] || 1;
             const amount = Math.max(MIN_TRADE_USDT, wallet.usdt * percentage);
@@ -1219,11 +1223,22 @@
             const minBtc = MIN_TRADE_USDT / currentPrice;
 
             if (step === 0) return minBtc;
-            if (step === 6) step = 5;
+
+            // At 100% (step 5 or 6), return EXACT wallet amount, not rounded
+            if (step >= 5) {
+                return wallet.btc; // Use exact wallet value, no rounding
+            }
 
             const percentage = SLIDER_STEPS[step] || 1;
             const amount = Math.max(minBtc, wallet.btc * percentage);
             return Math.min(amount, wallet.btc);
+        }
+
+        // Helper to get display value (rounded) vs actual value (exact)
+        function getSellDisplayAmount() {
+            const actual = getSellAmountFromSlider();
+            // Round for display only
+            return parseFloat(actual.toFixed(8));
         }
 
         function updateBuySummary() {
@@ -1247,12 +1262,13 @@
         }
 
         function updateSellSummary() {
-            const btcAmount = getSellAmountFromSlider();
+            const btcAmount = getSellAmountFromSlider(); // Exact value for trading
+            const displayBtc = parseFloat(btcAmount.toFixed(8)); // Rounded for display
             const usdtBeforeFee = btcAmount * currentPrice;
             const fee = usdtBeforeFee * COMMISSION_RATE;
             const usdtReceived = usdtBeforeFee - fee;
 
-            document.getElementById('sellSliderValue').textContent = `${btcAmount.toFixed(6)} BTC`;
+            document.getElementById('sellSliderValue').textContent = `${displayBtc.toFixed(6)} BTC`;
             document.getElementById('summarySpend').textContent = `${btcAmount.toFixed(6)} BTC`;
             document.getElementById('summaryReceive').textContent = `${usdtReceived.toFixed(2)} USDT`;
             document.getElementById('summaryFee').textContent = `${fee.toFixed(2)} USDT`;
