@@ -8,6 +8,10 @@ from threading import Lock
 
 app = Flask(__name__)
 
+# Configuration
+COMMISSION_RATE = 0.001  # 0.1%
+MIN_TRADE_USDT = 10.00   # Minimum 10 USDT per trade
+
 # File-based storage for Railway (shared across workers)
 DATA_FILE = '/tmp/trading_games.json'
 data_lock = Lock()
@@ -39,16 +43,8 @@ def set_player_wallet(player_id, wallet_data):
     games[player_id] = wallet_data
     save_games(games)
 
-def delete_player(player_id):
-    """Delete player from storage"""
-    games = load_games()
-    if player_id in games:
-        del games[player_id]
-        save_games(games)
-
 @app.route('/')
 def index():
-    # Check if player has existing wallet cookie
     player_id = request.cookies.get('player_id')
     wallet = None
 
@@ -67,8 +63,7 @@ def index():
             'created_at': datetime.now().isoformat()
         }
         set_player_wallet(new_player_id, new_wallet)
-        response.set_cookie('player_id', new_player_id, max_age=30*24*60*60)  # 30 days
-        print(f"Created new player: {new_player_id}")
+        response.set_cookie('player_id', new_player_id, max_age=30*24*60*60)
 
     return response
 
@@ -100,41 +95,72 @@ def trade():
 
     data = request.get_json()
     action = data.get('action')  # 'buy' or 'sell'
-    amount = float(data.get('amount', 0))
+    amount = float(data.get('amount', 0))  # For buy: USDT amount, For sell: BTC amount
     price = float(data.get('price', 0))
 
     if action not in ['buy', 'sell'] or amount <= 0 or price <= 0:
         return jsonify({'error': 'Invalid trade parameters'}), 400
 
     if action == 'buy':
+        # amount is USDT to spend
+        usdt_amount = amount
+
+        # Check minimum trade value
+        if usdt_amount < MIN_TRADE_USDT:
+            return jsonify({'error': f'Minimum trade is {MIN_TRADE_USDT} USDT'}), 400
+
         # Check if enough USDT
-        cost = amount * price
-        if cost > wallet['usdt']:
+        if usdt_amount > wallet['usdt']:
             return jsonify({'error': 'Insufficient USDT balance'}), 400
 
-        wallet['usdt'] -= cost
-        wallet['btc'] += amount
+        # Calculate BTC received (fee deducted from received BTC)
+        btc_before_fee = usdt_amount / price
+        fee_btc = btc_before_fee * COMMISSION_RATE
+        btc_received = btc_before_fee - fee_btc
+
+        wallet['usdt'] -= usdt_amount
+        wallet['btc'] += btc_received
+
+        trade_record = {
+            'action': 'BUY',
+            'amount': round(btc_received, 8),
+            'price': round(price, 2),
+            'spent': round(usdt_amount, 2),
+            'fee': round(fee_btc, 8),
+            'timestamp': datetime.now().isoformat()
+        }
 
     elif action == 'sell':
+        # amount is BTC to sell
+        btc_amount = amount
+
+        # Check minimum trade value (10 USDT equivalent)
+        usdt_value = btc_amount * price
+        if usdt_value < MIN_TRADE_USDT:
+            return jsonify({'error': f'Minimum trade is {MIN_TRADE_USDT} USDT equivalent'}), 400
+
         # Check if enough BTC
-        if amount > wallet['btc']:
+        if btc_amount > wallet['btc']:
             return jsonify({'error': 'Insufficient BTC balance'}), 400
 
-        revenue = amount * price
-        wallet['usdt'] += revenue
-        wallet['btc'] -= amount
+        # Calculate USDT received (fee deducted from received USDT)
+        usdt_before_fee = btc_amount * price
+        fee_usdt = usdt_before_fee * COMMISSION_RATE
+        usdt_received = usdt_before_fee - fee_usdt
 
-    # Record trade
-    trade_record = {
-        'action': action.upper(),
-        'amount': round(amount, 8),
-        'price': round(price, 2),
-        'total': round(amount * price, 2),
-        'timestamp': datetime.now().isoformat()
-    }
-    wallet['trades'].insert(0, trade_record)  # Add to beginning
+        wallet['btc'] -= btc_amount
+        wallet['usdt'] += usdt_received
 
-    # Save updated wallet
+        trade_record = {
+            'action': 'SELL',
+            'amount': round(btc_amount, 8),
+            'price': round(price, 2),
+            'received': round(usdt_received, 2),
+            'fee': round(fee_usdt, 2),
+            'timestamp': datetime.now().isoformat()
+        }
+
+    wallet['trades'].insert(0, trade_record)
     set_player_wallet(player_id, wallet)
 
     return jsonify({
@@ -157,7 +183,6 @@ def reset_game():
         set_player_wallet(player_id, new_wallet)
     return jsonify({'success': True, 'message': 'Game reset successfully'})
 
-# Health check endpoint for Railway
 @app.route('/health')
 def health():
     return jsonify({'status': 'healthy'})
